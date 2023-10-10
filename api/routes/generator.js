@@ -1,30 +1,34 @@
 const router = require('express').Router();
-const { sendResponse, sendError, publishModule, checkType, checkCoinRegister } = require('../funcUtils');
+const { sendResponse, sendError, checkType, checkCoinRegister, simpleCompileMove } = require('../funcUtils');
 
 
 
-// generate route for publishing the type
-router.post("/generate", async (req, res, next) => {
+router.post("/simplecompile" , async (req, res) => {
 
-	let {addr, coinType} = req.body;
-    let resp = {}
+    let {addr, coinType} = req.body;
 
     //validating parms
 	if (!addr | !coinType) return sendError(res, "Missing required params!", 406);
 
-    if (await checkType(coinType) == true) {
-        publishModule(addr, coinType)
-        .then(_ => console.log("Published Sucessfully"))
-        .then(_ => sendResponse(res, {stat: "Published sucessfully"}, 200))
-        .then(_ => _)
-        .catch(err => sendError(res, err, 500));
+
+    if (await checkType(addr, coinType) == true) {
+        simpleCompileMove(addr, coinType)
+            .then(result => {
+                // console.log("The message", result)
+                let message = {
+                    p: result.p,
+                    m: result.m,
+                }
+                return sendResponse(res, message, 200)
+            })
+            .catch(err => sendError(res, err, 500));
     } else {
-        if (await checkCoinRegister(coinType) == true) {
-            resp.initialized_message = "Coin Already Exists and initialized";
-            sendError(res, "Coin Already Exists and initialized", 400);
+        if (await checkCoinRegister(addr, coinType) == true) {
+            return sendResponse(res, "Coin Already Exists and initialized", 400);
         } //can add else block to register the give type if its not registered.
-        sendError(res, "Coin Already but not initialized", 400);
+        return sendResponse(res, "Coin Already Exists but not initialized", 400);
     }
+
 });
 
 

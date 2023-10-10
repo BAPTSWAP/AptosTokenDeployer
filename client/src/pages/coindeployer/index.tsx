@@ -1,11 +1,14 @@
 /* eslint-disable @next/next/no-img-element */
 import Head from "next/head";
+import { ABI } from "./ABI";
+import { createEntryPayload } from "@thalalabs/surf";
 import { useWallet } from "@aptos-labs/wallet-adapter-react";
+
 import StandardCard from "../../components/cards/StandardCard";
 import StandardTextField from "@/components/inputs/textfields/StandardTextField";
 import { Switch } from '@headlessui/react';
 import { Warning } from "./alerts";
-import {AptosClient, Types} from "aptos";
+import {AptosClient, Types, TxnBuilderTypes, HexString, BCS } from "aptos";
 import { useState } from "react";
 import {
   MouseParallaxChild,
@@ -25,8 +28,10 @@ interface APIresponseParams {
 
 // update this
 const GENERATOR_ENDPOINT = "http://localhost:1337/api/generate"
-const BAPT_FRAMEWORK_ADDRESS = "0x55cf2898ff4d43116a9afae911d6f69c9807bf575ee8180c26d7a2eae06336c5"
+const BAPT_FRAMEWORK_ADDRESS = "0xed86ad2e64f0fbf22233a33f6307995499d881a91ffd55ce0a553f8c82bed363"
 const DEV_NODE = "https://fullnode.devnet.aptoslabs.com"
+
+const SIMPLE_COMPILE_ENDPOINT = "http://localhost:1337/api/simplecompile"
 
 
 // initial form data
@@ -34,6 +39,7 @@ const intialFormValues = {
     name: "",
     symbol: "",
     decimal: 8,
+    supply: "",
     monitor_supply: true
 }
 
@@ -80,8 +86,8 @@ export default function CoinDeployer() {
     // form change handlers
     const handleFormDataChange = (e) => {
         const { name, value } = e.target;
-        if (name =="symbol") {
-            checkDeploy(value);
+        if (name == "symbol") {
+            checkDirectInitializeAndRetPublishible(value);
         }
         setFormData({
             ...formData,
@@ -99,32 +105,14 @@ export default function CoinDeployer() {
         });
     }
 
-    // calls API to publish the type
-    const publishType = () => {
-        setIsTypePublishing(true);
-        let payload = {
-            coinType: formData.symbol,
-            addr: account?.address
-        }
-        return fetch(GENERATOR_ENDPOINT, {
-            method: "post",
-            mode: 'cors',//turn off this when production
-            body: JSON.stringify(payload),
-            headers: { "Content-Type": "application/json", 'Accept': 'application/json' }
-        })
-        .then((res) => {setIsTypePublishing(false); return res.json()})
-        .catch(err => {setIsTypePublishing(false); console.log(err)})
-
-    }
-
     // initializes the coin by calling BAPT_FRAMEWORK::Deployer::generate_coin
     const initializeCoin = async () => {
         setIsDeploying(true);
         const payload: Types.TransactionPayload = {
             type: "entry_function_payload",
             function: `${BAPT_FRAMEWORK_ADDRESS}::Deployer::generate_coin`,
-            type_arguments: [`${BAPT_FRAMEWORK_ADDRESS}::CoinBucket::${formData.symbol.toUpperCase()}`],
-            arguments: [formData.name, formData.symbol, formData.decimal, formData.monitor_supply],
+            type_arguments: [`${account?.address}::CoinCollection::${formData.symbol.toUpperCase()}`],
+            arguments: [formData.name, formData.symbol, formData.decimal, formData.supply, formData.monitor_supply],
         };
 
         console.log(payload);
@@ -133,56 +121,20 @@ export default function CoinDeployer() {
         try {
             await aptosClient.waitForTransaction(response.hash);
             setsubmitMessage(`Txn sucessfully submitted on ${network?.name}, TxnHash: ${response.hash}`)
-            // console.log(response.hash, network?.name);
+            console.log(response.hash, network?.name);
         } catch (error) {
             console.error(error);
         }
         setIsDeploying(false);
     }
 
-    // publishes and deploys the cointype
-    const publishTypeAndDeployCoin = async (e) => {
-        e.preventDefault();
-        let dep_stat = await checkDeploy(formData.symbol);
-        setIsGenerating(true);
-
-        if (dep_stat == false) return;
-
-        // console.log("ONLY FLAG", onlyDeploy);
-
-        if (onlyDeploy){
-            setIsDeploying(true);
-            initializeCoin()
-                .then(_ => setIsGenerating(false))
-                .then(_ => setOnlyDeploy(false))
-                .catch(err => {console.log("err", err); setIsDeploying(false);setIsGenerating(false)})
-
-        } else {
-            setIsTypePublishing(true);
-            return publishType()
-                    .then((res:  APIresponseParams) => {
-                        if (res?.code != 200) {
-                            console.log("BAD API", res);
-                            throw new Error("BAD REQUEST");
-                        } else {
-                            console.log(res);
-                        }
-                    })
-                    .then(_ => setIsTypePublishing(false))
-                    .then(_ => initializeCoin())
-                    .then(_ => setIsGenerating(false))
-                    .catch(err => {console.log("err", err); setIsTypePublishing(false); setIsGenerating(false)})
-        }
-    }
 
     // checks if the coinType can direcly be initialized.
-    const checkDeploy = (coinType) => {
-        return checkPublish(coinType).then(res => {
-            // console.log("OUBBED", res);
+    const checkDirectInitializeAndRetPublishible = (coinType) => {
+        return checkTypePublished(account?.address, coinType).then(res => {
             if (res) {
-                return checkCoinRegister(coinType)
+                return checkCoinInitialized(account?.address, coinType)
                     .then((res) => {
-                        // console.log("INTED", res);
                         if (res) {
                             setOnlyDeploy(false); return false
                         }
@@ -196,8 +148,8 @@ export default function CoinDeployer() {
     }
 
     // for checking if a coinType is published
-    const checkPublish = (coinType) => {
-        return aptosClient.getAccountModule(BAPT_FRAMEWORK_ADDRESS, "CoinBucket")
+    const checkTypePublished = (addr, coinType) => {
+        return aptosClient.getAccountModule(addr, "CoinCollection")
                 .then(dat => (dat.abi?.structs.map(s => s.name)))
                 .then((coins) => {
                     if (coins?.includes(coinType.toUpperCase())) {
@@ -206,16 +158,17 @@ export default function CoinDeployer() {
                         return false;
                     }
                 })
+                .catch(_ => false);
     }
 
     // For setting the message for checking based on the coin publish and initialize status
     const checkCoinType = (coinType) => {
         let msg  = "";
         setCheckMessage(msg);
-        checkPublish(coinType)
+        checkTypePublished(account?.address, coinType)
             .then((published) => {
                 if (published) {
-                    return checkCoinRegister(coinType)
+                    return checkCoinInitialized(account?.address, coinType)
                         .then((initStat) => {
                             if (initStat && published) setCheckMessage("Coin Type published and Initialized");
                             else if (published && !initStat) setCheckMessage("Coin Type is published but not initialized");
@@ -226,26 +179,115 @@ export default function CoinDeployer() {
 
             })
             // .then(res => setCheckMessage(msg))
-            // .then(res => console.log("why", res))
             .catch(err => console.log(err)
         );
     
     }
     
     // checks if the coin is initialize => returns bool
-    const checkCoinRegister = (ctype) => {
+    const checkCoinInitialized = (addr, ctype) => {
         return aptosClient.view({
                 arguments: [],
                 function: "0x1::coin::is_coin_initialized",
-                type_arguments: [`${BAPT_FRAMEWORK_ADDRESS}::CoinBucket::${ctype.toUpperCase()}`]
+                type_arguments: [`${addr}::CoinCollection::${ctype.toUpperCase()}`]
             })
             .then((res) => {
-                console.log("The init stat",res);
+                // console.log("The init stat",res);
                 return res[0];
             })
-            .catch((err) => console.log(err));
+            .catch((err) => false);
     }
 
+    const publishPackageV2 = async (client, data) => {
+
+        let packageMetadata = new HexString(data.p.toString("hex")).toUint8Array();
+        let modules = new HexString(data.m.toString("hex")).toUint8Array();
+
+
+        const txn_payload = {
+            type: "entry_function_payload",
+            ...createEntryPayload(ABI, {
+              function: "publish_package_txn",
+              type_arguments: [],
+              arguments: [Array.from(packageMetadata), [Array.from(modules)]],
+            }).rawPayload,
+          };
+
+
+        console.log(txn_payload)
+
+        try {
+            const response = await signAndSubmitTransaction(txn_payload);
+            await client.waitForTransaction(response.hash);
+            setsubmitMessage(`Txn sucessfully submitted on ${network?.name}, TxnHash: ${response.hash}`)
+            console.log(response.hash, network?.name);
+        } catch (error) {
+            console.error(error);
+            setIsDeploying(false); setIsGenerating(false);
+            throw new Error(`${error}`);
+        }
+
+    }
+
+
+    const publishTypeV2 = async (e, client) => {
+        e.preventDefault();
+        setIsGenerating(true);
+        setIsTypePublishing(false);
+        setIsDeploying(false);
+
+        let dep_stat = await checkDirectInitializeAndRetPublishible(formData.symbol);
+
+        if (dep_stat == false) return;
+
+        console.log("ONly dep flag", onlyDeploy, dep_stat);
+
+        if (onlyDeploy){
+            setIsDeploying(true);
+            return initializeCoin()
+                .then(_ => setIsGenerating(false))
+                .then(_ => setOnlyDeploy(false))
+                .catch(err => {console.log("err", err); setIsDeploying(false);setIsGenerating(false)})
+
+        } else {
+            setIsTypePublishing(true);
+            let api_payload = {
+                coinType: formData.symbol,
+                addr: account?.address
+            }
+            return fetch(SIMPLE_COMPILE_ENDPOINT, {
+                method: "post",
+                mode: 'cors',//turn off this when production
+                body: JSON.stringify(api_payload),
+                headers: { "Content-Type": "application/json", "Accept": "application/json" }
+            })
+            .then((res) => {
+                setIsTypePublishing(false);
+                setIsDeploying(true);
+                return res.json()
+            })
+            .then((resp: APIresponseParams) => {
+                if (!resp) {
+                    throw new Error("BAD API");
+                }
+                return resp
+            })
+            .then((resp: APIresponseParams) => publishPackageV2(client, resp.data))
+            .then(ret => console.log("Type Published"))
+            .then(_ => initializeCoin())
+            .then(_ => {
+                setIsDeploying(false);
+                setIsGenerating(false);
+            })
+            .catch(err => {setIsTypePublishing(false); setIsDeploying(false); setIsGenerating(false); console.log(err)})
+        }
+        
+    }
+
+    const handleCheckCoinAction = (e) => {
+        e.preventDefault();
+        checkCoinType(coinType)
+    }
 
     return (
     <>
@@ -286,7 +328,7 @@ export default function CoinDeployer() {
                                     <>
                                         <div className="flex flex-col items-right justify-between w-full p-4 md:px-0 rounded-xl">
                                             <div className="w-1/4 mx-4">
-                                            <form onSubmit={(e) => {publishTypeAndDeployCoin(e)}}>
+                                            <form onSubmit={(e) => {publishTypeV2(e, aptosClient)}}>
                                                 <div className="flex flex-row w-full bg-darkgray p-4 px-5 pl-6 rounded-2xl hover:inner-border-[1px] inner-border-bapt_green/30">
                                                     <input
                                                         name="name"
@@ -320,6 +362,19 @@ export default function CoinDeployer() {
                                                         placeholder={"Decimals (<255)"}
                                                         className="bg-transparent mr-3 transition ease-in-out w-full h-auto outline-none text-white/60"
                                                         value={formData.decimal}
+                                                        onChange={handleFormDataChange}
+                                                        required={true}
+                                                    />
+                                                </div>
+                                                <br />
+
+                                                <div className="flex flex-row w-full bg-darkgray p-4 px-5 pl-6 rounded-2xl hover:inner-border-[1px] inner-border-bapt_green/30">
+                                                    <input
+                                                        name="supply"
+                                                        type="string"
+                                                        placeholder={"Total Supply"}
+                                                        className="bg-transparent mr-3 transition ease-in-out w-full h-auto outline-none text-white/60"
+                                                        value={formData.supply}
                                                         onChange={handleFormDataChange}
                                                         required={true}
                                                     />
@@ -422,20 +477,37 @@ export default function CoinDeployer() {
                                 contentAction={
                                     connected ? (
                                     <>
-                                        <StandardTextField
+                                        <form onSubmit={(e) => handleCheckCoinAction(e)}>
+                                            <div className="flex flex-row w-full bg-darkgray p-4 px-5 pl-6 rounded-2xl hover:inner-border-[1px] inner-border-bapt_green/30">
+                                                <input
+                                                    name="coinType"
+                                                    type="string"
+                                                    placeholder={"Coin Type"}
+                                                    className="bg-transparent mr-3 transition ease-in-out w-full h-auto outline-none text-white/60"
+                                                    value={coinType}
+                                                    onChange={(e) => {
+                                                        setCoinType(e.target.value);
+                                                    }}
+                                                    required={true}
+                                                />
+                                            </div>
+                                            <br />
+
+                                        {/* <StandardTextField
                                             value={coinType}
                                             placeholder="CoinType"
                                             onChange={(e) => {
                                                 setCoinType(e.target.value);
                                             }}
-                                        />
+                                        /> */}
                                         <br></br>
                                         {/* onclick of this button check if the entered coin is initialized by the wallet owner */}
                                         <StandardFormButton
                                             label="Check"
-                                            onClick={() => {checkCoinType(coinType)}}
+                                            onClick={() => {}}
                                             className="w-full hover:cursor-default"
                                         />
+                                        </form>
                                     </>
                                     ) : (
                                         <StandardFormButton
