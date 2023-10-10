@@ -354,10 +354,10 @@ Assuming the aptos cli is not configured, and install the aptos cli from [here](
 ### Flow
 #### Admin(bapt_framework)
 1. Publish the deployer module.
-2. Initialize the module with the help of the script in the `deploy_script.move`.
+2. Initialize the module with the help of the script in the `admin_script.move`.
 
 #### End user
-1. The user should publish a module under their address like `cointype.move`, which contains all the types of the coins.
-2. Then he should call the function `generate_coin` with the help of the script in the `create_coin_script`.
+1. The user should publish a module under their address `coincollection.move`, which contains all the types of the coins.
+2. Then he should call the function `generate_coin` to initailize the coin.
 
 Both of the these should be generated for the user to ease the workflow and the user can simply submit the transactions.
