@@ -521,16 +521,7 @@ export default function CoinDeployer() {
                             />
                         </div>
                     </div>
-                    <div className="flex flex-col items-center text-center">
-                    <p className="text-gray py-2 text-sm px-10">Built By</p>
-                    <a
-                    href="https://www.3trees.technology/"
-                    target="_blank"
-                    rel="noreferrer"
-                    >
-                        3T
-                    </a>
-                    </div>
+                    
                     <div className="flex flex-col items-center text-center">
                     <p className="text-gray py-2 text-sm px-10">
                     By interacting with BaptSwap, you agree to our Terms of Use.
