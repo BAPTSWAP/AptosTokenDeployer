@@ -1,22 +1,38 @@
 module bapt_framework::Deployer {
 
-    use aptos_framework::coin::{Self};
+    use aptos_framework::coin::{
+        Self, 
+        BurnCapability, 
+        FreezeCapability, 
+        MintCapability
+    };
     use aptos_framework::aptos_coin::AptosCoin;
     use aptos_framework::managed_coin;
     use std::signer;
+    use std::string::{String};
 
     struct Config has key {
         owner: address,
         fee: u64
     }
 
+    struct Capabilities<phantom CoinType> has key {
+        burn_cap: BurnCapability<CoinType>,
+        freeze_cap: FreezeCapability<CoinType>,
+        mint_cap: MintCapability<CoinType>,
+    }
+
     // Error Codes 
-    const INVALID_BAPT_ACCOUNT: u8 = 0;
-    const DEPLOYER_NOT_INITIALIZED: u8 = 1;
+    const ERROR_INVALID_BAPT_ACCOUNT: u64 = 0;
+    const ERROR_ERROR_INSUFFICIENT_APT_BALANCE: u64 = 1;
+    const INSUFFICIENT_APT_BALANCE: u64 = 2;
 
 
     entry public fun init(bapt_framework: &signer, fee: u64, owner: address){
-        assert!(signer::address_of(bapt_framework) == @bapt_framework, 0);
+        assert!(
+            signer::address_of(bapt_framework) == @bapt_framework, 
+            ERROR_INVALID_BAPT_ACCOUNT
+        );
 
         move_to(bapt_framework, Config {
             owner,
@@ -25,41 +41,84 @@ module bapt_framework::Deployer {
     }
 
     entry public fun update_fee(bapt_framework: &signer, new_fee: u64) acquires Config {
-        assert!(signer::address_of(bapt_framework) == @bapt_framework, 0);
+        assert!(
+            signer::address_of(bapt_framework) == @bapt_framework, 
+            ERROR_INVALID_BAPT_ACCOUNT
+        );
         // only allowed after the deployer is initialized
-        assert!(exists<Config>(@bapt_framework), 1);
+        assert!(exists<Config>(@bapt_framework), ERROR_ERROR_INSUFFICIENT_APT_BALANCE);
 
         let config = borrow_global_mut<Config>(@bapt_framework);
         config.fee = new_fee;
     }
 
     entry public fun update_owner(bapt_framework: &signer, new_owner: address) acquires Config {
-        assert!(signer::address_of(bapt_framework) == @bapt_framework, 0);
+        assert!(
+            signer::address_of(bapt_framework) == @bapt_framework, 
+            ERROR_INVALID_BAPT_ACCOUNT
+        );
         // only allowed after the deployer is initialized
-        assert!(exists<Config>(@bapt_framework), 1);
+        assert!(exists<Config>(@bapt_framework), ERROR_ERROR_INSUFFICIENT_APT_BALANCE);
 
         let config = borrow_global_mut<Config>(@bapt_framework);
         config.owner = new_owner;
     }
 
-
-    entry public fun generate_coin<T>(
+    // Generates a new coin and mints the total supply to the deployer. capabilties are then destroyed
+    entry public fun generate_coin<CoinType>(
         deployer: &signer,
-        name: vector<u8>,
-        symbol: vector<u8>,
+        name: String,
+        symbol: String,
         decimals: u8,
         total_supply: u64,
         monitor_supply: bool,
-    ) acquires Config {        
+    ) acquires Capabilities, Config {        
         // only allowed after the deployer is initialized
-        assert!(exists<Config>(@bapt_framework), 1);
+        assert!(exists<Config>(@bapt_framework), ERROR_ERROR_INSUFFICIENT_APT_BALANCE);
+        // the deployer must have enough APT to pay for the fee
+        assert!(
+            coin::balance<AptosCoin>(signer::address_of(deployer)) >= borrow_global<Config>(@bapt_framework).fee,
+            INSUFFICIENT_APT_BALANCE
+        );
+        let deployer_addr = signer::address_of(deployer);
+        let (
+            burn_cap, 
+            freeze_cap, 
+            mint_cap
+        ) = coin::initialize<CoinType>(
+            deployer, 
+            name, 
+            symbol, 
+            decimals, 
+            monitor_supply
+        );
 
-        managed_coin::initialize<T>(deployer, name, symbol, decimals, monitor_supply);
-        managed_coin::register<T>(deployer);
-        managed_coin::mint<T>(deployer, signer::address_of(deployer), total_supply);
+        // move caps
+        move_to(deployer, Capabilities<CoinType> {
+            burn_cap,
+            freeze_cap,
+            mint_cap,
+        });
+
+        coin::register<CoinType>(deployer);
+        mint_internal<CoinType>(deployer_addr, total_supply);
 
         collect_fee(deployer);
 
+        // destroy caps
+        coin::destroy_freeze_cap<CoinType>(freeze_cap);
+        coin::destroy_burn_cap<CoinType>(burn_cap);
+        coin::destroy_mint_cap<CoinType>(mint_cap);
+    }
+
+    // Helper function; used to mint freshly created coin
+    fun mint_internal<CoinType>(
+        deployer_addr: address,
+        total_supply: u64
+    )acquires Capabilities {
+        let caps = borrow_global<Capabilities<CoinType>>(deployer_addr);
+        let coins_minted = coin::mint(total_supply, &caps.mint_cap);
+        coin::deposit(deployer_addr, coins_minted);
     }
 
     fun collect_fee(deployer: &signer) acquires Config {
@@ -67,4 +126,41 @@ module bapt_framework::Deployer {
         coin::transfer<AptosCoin>(deployer, config.owner, config.fee);
     }
 
+    #[test_only]
+    use aptos_framework::aptos_coin;
+    #[test_only]
+    use std::string;
+    #[test_only]
+    struct FakeBAPT {}
+
+    #[test(aptos_framework = @0x1, bapt_framework = @bapt_framework, user = @0x123)]
+    // #[expected_failure, code = 65537]
+    fun test_user_deploys_coin(
+        aptos_framework: signer,
+        bapt_framework: signer,
+        user: &signer,
+    ) acquires Capabilities, Config {
+        aptos_framework::account::create_account_for_test(signer::address_of(&bapt_framework));
+        // aptos_framework::account::create_account_for_test(signer::address_of(user));
+        init(&bapt_framework, 1, signer::address_of(&bapt_framework));
+        // register aptos coin and mint some APT to be able to pay for the fee of generate_coin
+        managed_coin::register<AptosCoin>(&bapt_framework);
+        let (aptos_coin_burn_cap, aptos_coin_mint_cap) = aptos_coin::initialize_for_test(&aptos_framework);
+        // mint some APT to be able to pay for the fee of generate_coin
+        aptos_coin::mint(&aptos_framework, signer::address_of(&bapt_framework), 1000);
+        
+        generate_coin<FakeBAPT>(
+            &bapt_framework,
+            string::utf8(b"Fake BAPT"),
+            string::utf8(b"BAPT"),
+            18,
+            1000,
+            true,
+        );
+
+        // destroy APT mint and burn caps
+        coin::destroy_mint_cap<AptosCoin>(aptos_coin_mint_cap);
+        coin::destroy_burn_cap<AptosCoin>(aptos_coin_burn_cap);
+        
+    }
 }
