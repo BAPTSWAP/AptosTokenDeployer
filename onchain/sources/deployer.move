@@ -10,8 +10,6 @@
 
 module bapt_framework::deployer {
 
-    use aptos_framework::account;
-    use aptos_framework::aggregator_factory;
     use aptos_framework::coin::{
         Self, 
         BurnCapability, 
@@ -138,7 +136,6 @@ module bapt_framework::deployer {
 
     #[test_only]
     use aptos_framework::aptos_coin;
-    use aptos_framework::managed_coin;
     #[test_only]
     struct FakeBAPT {}
     #[test_only]
